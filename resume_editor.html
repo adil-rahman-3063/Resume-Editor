@@ -2570,10 +2570,100 @@
 
       function isSelectionMuted() {
         const sel = window.getSelection();
-        if (!sel || !sel.anchorNode) return false;
+        if (!sel || !sel.rangeCount || sel.isCollapsed) return false;
         let node = sel.anchorNode;
-        if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
-        return !!node?.closest('.text-muted, .role-org, [style*="6b6f76"], [style*="6B6F76"], [style*="107, 111, 120"]');
+        if (node && node.nodeType === Node.TEXT_NODE) node = node.parentElement;
+        if (!node) return false;
+        if (node.closest('.text-muted, .role-org')) return true;
+        const fontEl = node.closest('font[color], [style*="color"]');
+        if (fontEl) {
+          const col = fontEl.getAttribute("color") || fontEl.style.color || "";
+          if (/6b6f76/i.test(col) || /9a9c99/i.test(col) || /107,\s*111/i.test(col) || /154,\s*156/i.test(col) || /gray|grey/i.test(col)) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function cleanMutedNodes(root) {
+        if (!root) return;
+        if (root.nodeType === Node.ELEMENT_NODE) {
+          root.classList?.remove("text-muted");
+          root.classList?.remove("role-org");
+          if (root.tagName === "FONT") {
+            root.removeAttribute("color");
+          }
+          if (root.style) {
+            root.style.removeProperty("color");
+            if (!root.getAttribute("style")) root.removeAttribute("style");
+            if (!root.getAttribute("class")) root.removeAttribute("class");
+          }
+        }
+        const mutedElements = root.querySelectorAll ? root.querySelectorAll('.text-muted, .role-org, font[color], [style*="color"]') : [];
+        mutedElements.forEach(el => {
+          el.classList.remove("text-muted", "role-org");
+          el.removeAttribute("color");
+          if (el.style) {
+            el.style.removeProperty("color");
+            if (!el.getAttribute("style")) el.removeAttribute("style");
+            if (!el.getAttribute("class")) el.removeAttribute("class");
+          }
+          if ((el.tagName === "SPAN" || el.tagName === "FONT") && !el.attributes.length) {
+            const parent = el.parentNode;
+            if (parent) {
+              while (el.firstChild) {
+                parent.insertBefore(el.firstChild, el);
+              }
+              parent.removeChild(el);
+            }
+          }
+        });
+      }
+
+      function unwrapRangeFromContainer(container, range) {
+        const beforeRange = document.createRange();
+        beforeRange.setStart(container, 0);
+        beforeRange.setEnd(range.startContainer, range.startOffset);
+        const beforeFrag = beforeRange.extractContents();
+
+        const selectedFrag = range.extractContents();
+        cleanMutedNodes(selectedFrag);
+
+        const afterFrag = document.createDocumentFragment();
+        while (container.firstChild) {
+          afterFrag.appendChild(container.firstChild);
+        }
+
+        const parent = container.parentNode;
+        if (!parent) return;
+
+        const refNode = container;
+
+        if (beforeFrag.textContent.length > 0 || beforeFrag.childNodes.length > 0) {
+          const beforeEl = container.cloneNode(false);
+          beforeEl.appendChild(beforeFrag);
+          parent.insertBefore(beforeEl, refNode);
+        }
+
+        const insertedNodes = Array.from(selectedFrag.childNodes);
+        parent.insertBefore(selectedFrag, refNode);
+
+        if (afterFrag.textContent.length > 0 || afterFrag.childNodes.length > 0) {
+          const afterEl = container.cloneNode(false);
+          afterEl.appendChild(afterFrag);
+          parent.insertBefore(afterEl, refNode);
+        }
+
+        parent.removeChild(refNode);
+
+        if (insertedNodes.length > 0) {
+          const newRange = document.createRange();
+          newRange.setStartBefore(insertedNodes[0]);
+          newRange.setEndAfter(insertedNodes[insertedNodes.length - 1]);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+        }
       }
 
       function toggleMutedColor() {
@@ -2581,23 +2671,42 @@
         if (!sel || sel.isCollapsed || !sel.rangeCount) return;
         const range = sel.getRangeAt(0);
 
-        let node = sel.anchorNode;
-        if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
-        const mutedEl = node?.closest('.text-muted');
+        const currentlyMuted = isSelectionMuted();
 
-        if (mutedEl) {
-          const parent = mutedEl.parentNode;
-          while (mutedEl.firstChild) {
-            parent.insertBefore(mutedEl.firstChild, mutedEl);
+        if (currentlyMuted) {
+          let node = sel.anchorNode;
+          if (node && node.nodeType === Node.TEXT_NODE) node = node.parentElement;
+          const mutedAncestor = node?.closest('.text-muted, .role-org, font[color], [style*="color"]');
+
+          if (mutedAncestor) {
+            unwrapRangeFromContainer(mutedAncestor, range);
+          } else {
+            const extracted = range.extractContents();
+            cleanMutedNodes(extracted);
+            const insertedNodes = Array.from(extracted.childNodes);
+            range.insertNode(extracted);
+            if (insertedNodes.length > 0) {
+              const newRange = document.createRange();
+              newRange.setStartBefore(insertedNodes[0]);
+              newRange.setEndAfter(insertedNodes[insertedNodes.length - 1]);
+              sel.removeAllRanges();
+              sel.addRange(newRange);
+            }
           }
-          parent.removeChild(mutedEl);
         } else {
+          const span = document.createElement("span");
+          span.className = "text-muted";
           try {
-            const span = document.createElement("span");
-            span.className = "text-muted";
-            range.surroundContents(span);
+            const extracted = range.extractContents();
+            span.appendChild(extracted);
+            range.insertNode(span);
+
+            const newRange = document.createRange();
+            newRange.selectNodeContents(span);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
           } catch (e) {
-            document.execCommand("foreColor", false, "#6B6F76");
+            console.warn("Could not wrap in text-muted span", e);
           }
         }
       }
